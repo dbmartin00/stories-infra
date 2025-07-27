@@ -1,3 +1,5 @@
+import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
@@ -5,10 +7,65 @@ import {
   GetCommand
 } from '@aws-sdk/lib-dynamodb';
 
-const client = new DynamoDBClient({ region: 'us-west-2' });
+// 🔐 Read from environment variables
+const REGION = process.env.COGNITO_REGION;
+const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
+
+const client = new DynamoDBClient({ region: REGION });
 const docClient = DynamoDBDocumentClient.from(client);
 
+const jwks = jwksClient({
+  jwksUri: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}/.well-known/jwks.json`
+});
+
+function getKey(header, callback) {
+  jwks.getSigningKey(header.kid, (err, key) => {
+    if (err) return callback(err);
+    const signingKey = key.getPublicKey();
+    callback(null, signingKey);
+  });
+}
+
 export const handler = async (event) => {
+  const token = event.headers?.authorization;
+
+  if (!token) {
+    return {
+      statusCode: 401,
+      body: JSON.stringify({ error: 'Unauthorized: No token provided' })
+    };
+  }
+
+  let decoded;
+  try {
+    decoded = await new Promise((resolve, reject) => {
+      jwt.verify(
+        token,
+        getKey,
+        {
+          issuer: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
+          algorithms: ['RS256']
+        },
+        (err, decoded) => (err ? reject(err) : resolve(decoded))
+      );
+    });
+
+    if (decoded.email !== ADMIN_EMAIL) {
+      return {
+        statusCode: 403,
+        body: JSON.stringify({ error: 'Forbidden: Not authorized' })
+      };
+    }
+  } catch (err) {
+    console.error('❌ Token verification failed:', err.message);
+    return {
+      statusCode: 401,
+      body: JSON.stringify({ error: 'Unauthorized: Invalid token' })
+    };
+  }
+
+  // ✅ Auth passed — continue with save logic
   const query = event.queryStringParameters || {};
   const filename = query.s;
 
@@ -44,7 +101,6 @@ export const handler = async (event) => {
       }
     }));
 
-    // Create stub stories for missing targets
     const targets = (body.options || []).map(opt => opt.target).filter(Boolean);
 
     for (const targetId of targets) {
