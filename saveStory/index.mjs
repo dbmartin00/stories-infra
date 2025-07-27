@@ -7,10 +7,8 @@ import {
   GetCommand
 } from '@aws-sdk/lib-dynamodb';
 
-// 🔐 Read from environment variables
 const REGION = process.env.COGNITO_REGION;
 const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 
 const client = new DynamoDBClient({ region: REGION });
 const docClient = DynamoDBDocumentClient.from(client);
@@ -29,6 +27,7 @@ function getKey(header, callback) {
 
 export const handler = async (event) => {
   const token = event.headers?.authorization;
+  console.log('Authorization header received:', !!token);
 
   if (!token) {
     return {
@@ -51,10 +50,14 @@ export const handler = async (event) => {
       );
     });
 
-    if (decoded.email !== ADMIN_EMAIL) {
+    const groups = decoded['cognito:groups'] || [];
+    console.log('Decoded email:', decoded.email);
+    console.log('Groups:', groups);
+
+    if (!groups.includes('Editors')) {
       return {
         statusCode: 403,
-        body: JSON.stringify({ error: 'Forbidden: Not authorized' })
+        body: JSON.stringify({ error: 'Forbidden: Not in Editors group' })
       };
     }
   } catch (err) {
